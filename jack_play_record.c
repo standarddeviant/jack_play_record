@@ -28,14 +28,15 @@ const char *REC_NAME = "jack_record";
 #define PLAY_MODE (SFM_READ)
 #define REC_MODE (SFM_WRITE)
 #define SND_FNAME_SIZE (2048)
-#define JACK_NAME_SIZE (2048)
+#define JACK_CLIENT_NAME_SIZE (2048)
+#define JACK_PORT_NAME_SIZE (2048)
 char sndfname[SND_FNAME_SIZE] = {0};
 SNDFILE *sndf;
 SF_INFO sndfinfo;
 int sndmode = PLAY_MODE;
 int sndchans = 0;
 
-char jackname[JACK_NAME_SIZE] = {0};
+char jackname[JACK_CLIENT_NAME_SIZE] = {0};
 
 // Interleaved buffer
 jack_default_audio_sample_t jackbufI[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECORD_MAX_FRAMES]; 
@@ -54,14 +55,14 @@ jack_default_audio_sample_t jackbufI[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECO
 int
 process (jack_nframes_t nframes, void *arg)
 {
-    int cnt, cidx, sidx;
+    int cnt, cidx, fidx, sidx;
     // jack_default_audio_sample_t *in, *out;
     if(sndmode == PLAY_MODE) {
         // read data from sndf in to interleaved buffer
         cnt = sf_readf_float(sndf, &(jackbufI[0]), nframes*sndchans);
         if(cnt < nframes ){
             sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
-            sf_count_t cnt2 = sf_readf_float(sndf, &(jackbufI[cnt*sndchans]),
+            int cnt2 = sf_readf_float(sndf, &(jackbufI[cnt*sndchans]),
                 (nframes-cnt)*sndfinfo.channels);
             if(cnt + cnt2 != nframes) {
                 printf("This is bad, almost certainly a bug...\n");
@@ -71,8 +72,8 @@ process (jack_nframes_t nframes, void *arg)
         // get jack buffers as needed, and write directly in to those buffers
         for(cidx=0; cidx<sndchans; cidx++) {
             jack_default_audio_sample_t *jackbuf = jack_port_get_buffer(jackout_ports[cidx], nframes);
-            for(sidx=0; sidx<nframes; sidx++) {
-                *(jackbuf++) = jackbufI[(sidx*sndchans) + cidx];
+            for(fidx=0; fidx<nframes; fidx++) {
+                *(jackbuf++) = jackbufI[(fidx*sndchans) + cidx];
             }
         }
     }
@@ -85,21 +86,21 @@ process (jack_nframes_t nframes, void *arg)
         
         // write to sndfile one sample at a time
         // set outer loop over frames/samples
-        for(sidx=0; sidx<nframes; sidx++) {
+        sidx = 0; // use sample index to book-keep current index in to jackbufI
+        for(fidx=0; fidx<nframes; fidx++) {
             // set inner loop over channels/jackbufs
             for(cidx=0; cidx<sndchans; cidx++) {
                 // this is naive, but might be fast enough
                 // the real problem is that this really ought to be threaded...
-                // but that means threading in C :-(
-                cnt = sf_write_float(sndf, (float *)&(jackbufs[cidx][sidx]), 1);
+                // but that means threading in C :-/
+                jackbufI[sidx++] = jackbufs[cidx][fidx];
             }
         }
 
-
-
-
-
-
+        cnt = sf_writef_float(sndf, &(jackbufI[0]), nframes*sndchans);
+        if(cnt != nframes*sndchans) {
+            printf("after writing to file, cnt (samples) = %d, but nframes*sndchans (%d * %d) = %d\n", cnt, nframes, sndchans, nframes*sndchans);
+        }
     }
 
 	return 0;      
@@ -134,35 +135,34 @@ main (int argc, char *argv[])
 	jack_status_t status;
 
     int cidx, sidx;
-	char c;
+	int c;
 
+    char portname[JACK_PORT_NAME_SIZE] = {0};
 
-    // argc includes the binary - if the binary was called with NO arguments, just print usage...
-    if(argc <= 1) {
-        usage();
-        return 0;
-    }
-
-	while ((c = getopt (argc, argv, "prcnh")) != -1)
+	while ((c = getopt (argc, argv, "p:r:c:n:h")) != -1)
     switch (c)
 		{
 		case 'p':
 			sndmode = PLAY_MODE;
 			snprintf(sndfname, SND_FNAME_SIZE, "%s", optarg);
+            printf("p: sndfname = -->%s<--, sndmode = %d, sndchans = %d\n", sndfname, sndmode, sndchans);
         	break;
       	case 'r':
 			sndmode = REC_MODE;
 			snprintf(sndfname, SND_FNAME_SIZE, "%s", optarg);
+            printf("r: sndfname = -->%s<--, sndmode = %d, sndchans = %d\n", sndfname, sndmode, sndchans);
         	break;
       	case 'c':
 			sndchans = atoi(optarg);
+            printf("c: sndfname = -->%s<--, sndmode = %d, sndchans = %d\n", sndfname, sndmode, sndchans);
             break;
         case 'n':
-            snprintf(jackname, JACK_NAME_SIZE, "%s", optarg);
+            snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            printf("n: sndfname = -->%s<--, sndmode = %d, sndchans = %d\n", sndfname, sndmode, sndchans);
             break;
         case 'h':
             usage();
-            break;
+            return 0;
 		// case '?':
 		// 	if (optopt == 'c')
 		// 		fprintf (stderr, "Option -%c requires an argument.\n", optopt);
@@ -177,11 +177,20 @@ main (int argc, char *argv[])
     	    abort ();
 	}
 
+    /* after parsing args, if sndfname is empty, then just print usage */
+    if(0 == strlen((const char *)sndfname)) {
+        usage();
+        return 0;
+    }
+
     /* ensure there's a reasonable jack client name if not already set */
     if( jackname[0] == 0 ) {
-        snprintf(jackname, JACK_NAME_SIZE, "%s", \
+        snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", \
             (sndmode==PLAY_MODE) ? (PLAY_NAME) : (REC_NAME)) ;
     }
+
+
+    printf("DBG: jackname = %s\n", jackname);
 
 	/* open a client connection to the JACK server */
 	client = jack_client_open(jackname, options, &status, server_name);
@@ -197,9 +206,11 @@ main (int argc, char *argv[])
 		fprintf (stderr, "JACK server started\n");
 	}
 	if (status & JackNameNotUnique) {
-		snprintf(jackname, JACK_NAME_SIZE, "%s", jack_get_client_name(client));
+		snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", jack_get_client_name(client));
 		fprintf(stderr, "unique name `%s' assigned\n", &(jackname[0]));
 	}
+
+
 
     /* with an unconfigured jack client, we can do some sndfile prep, like get the sample rate*/
     if( sndmode == PLAY_MODE ){
@@ -216,8 +227,14 @@ main (int argc, char *argv[])
         }
         sndfinfo.samplerate = jack_get_sample_rate(client);
         sndfinfo.channels = sndchans;
-        sndfinfo.format = SF_FORMAT_WAV;
-        sf_open((const char *)sndfname, sndmode, &sndfinfo);
+        sndfinfo.format = SF_FORMAT_WAV | SF_FORMAT_FLOAT;
+        sndf = sf_open((const char *)sndfname, sndmode, &sndfinfo);
+    }
+
+    int sferr = sf_error(sndf);
+    if(sferr) {
+        printf("Tried to open %s and obtained this error code from sf_error: %d\n",
+                sndfname, sferr);
     }
 
 	/* tell the JACK server to call `process()' whenever
@@ -241,18 +258,22 @@ main (int argc, char *argv[])
 	/* create two ports */
     for(cidx=0; cidx<sndchans; cidx++) {
         if(sndmode == PLAY_MODE){
-            jackout_ports[cidx] = jack_port_register (client, "output",
-                            JACK_DEFAULT_AUDIO_TYPE,
-                            JackPortIsOutput, 0);
+            snprintf(portname, JACK_PORT_NAME_SIZE, "out_%02d", cidx+1);
+            jackout_ports[cidx] = jack_port_register(client, portname,                    
+                    JACK_DEFAULT_AUDIO_TYPE,
+                    JackPortIsOutput, 0);
+            printf("jackout_ports[%d] = %p\n", cidx, jackout_ports[cidx]);
         }
         else if(sndmode == REC_MODE) {
-            jackin_ports[cidx] = jack_port_register (client, "input",
-                            JACK_DEFAULT_AUDIO_TYPE,
-                            JackPortIsInput, 0);
+            snprintf(portname, JACK_PORT_NAME_SIZE, "in_%02d", cidx+1);
+            jackin_ports[cidx] = jack_port_register (client, portname,
+                    JACK_DEFAULT_AUDIO_TYPE,
+                    JackPortIsInput, 0);
+            printf("jackin_ports[%d] = %p\n", cidx, jackin_ports[cidx]);
         }
         // else {} , FIXME
     }
-    
+
     // add error case
     // else{
     // }
