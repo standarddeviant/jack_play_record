@@ -16,10 +16,10 @@
 
 #include <jack/jack.h>
 
-#define JCK_MAX_PORTS (64)
-#define JCK_MAX_FRAMES (16384)
-jack_port_t *jckin_ports[JCK_MAX_PORTS];
-jack_port_t *jckout_ports[JCK_MAX_PORTS];
+#define JACK_PLAY_RECORD_MAX_PORTS (64)
+#define JACK_PLAY_RECORD_MAX_FRAMES (16384)
+jack_port_t *jackin_ports[JACK_PLAY_RECORD_MAX_PORTS];
+jack_port_t *jackout_ports[JACK_PLAY_RECORD_MAX_PORTS];
 jack_client_t *client;
 
 const char *PLAY_NAME = "jack_play";
@@ -35,11 +35,13 @@ SF_INFO sndfinfo;
 int sndmode = PLAY_MODE;
 int sndchans = 0;
 
-char jckname[JACK_NAME_SIZE] = {0};
+char jackname[JACK_NAME_SIZE] = {0};
 
-jack_default_audio_sample_t jckbufI[JCK_MAX_PORTS * JCK_MAX_FRAMES]; // Interleaved
-// jack_default_audio_sample_t jckbufD[JCK_MAX_PORTS][JCK_MAX_FRAMES];  // De-interleaved
-// jack_default_audio_sample_t jckbufD1[JCK_MAX_FRAMES];  // De-interleaved
+// Interleaved buffer
+jack_default_audio_sample_t jackbufI[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECORD_MAX_FRAMES]; 
+
+// jack_default_audio_sample_t jackbufD[JACK_PLAY_RECORD_MAX_PORTS][JACK_PLAY_RECORD_MAX_FRAMES];  // De-interleaved
+// jack_default_audio_sample_t jackbufD1[JACK_PLAY_RECORD_MAX_FRAMES];  // De-interleaved
 
 /**
  * The process callback for this JACK application is called in a
@@ -56,10 +58,10 @@ process (jack_nframes_t nframes, void *arg)
 	// jack_default_audio_sample_t *in, *out;
     if(sndmode == PLAY_MODE) {
         // read data from sndf in to interleaved buffer
-        cnt = sf_readf_float(sndf, &(jckbufI[0]), nframes*sndchans);
+        cnt = sf_readf_float(sndf, &(jackbufI[0]), nframes*sndchans);
         if(cnt < nframes ){
             sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
-            int cnt2 = sf_readf_float(sndf, &(jckbufI[cnt*sndchans]),
+            int cnt2 = sf_readf_float(sndf, &(jackbufI[cnt*sndchans]),
                 (nframes-cnt)*sndfinfo.channels);
             if(cnt + cnt2 != nframes) {
                 printf("This is bad, almost certainly a bug...\n");
@@ -68,9 +70,9 @@ process (jack_nframes_t nframes, void *arg)
         }
         // get jack buffers as needed, and write directly in to those buffers
         for(cidx=0; cidx<sndchans; cidx++) {
-            jack_default_audio_sample_t *jckbuf = jack_port_get_buffer(jckout_ports[cidx], nframes);
+            jack_default_audio_sample_t *jackbuf = jack_port_get_buffer(jackout_ports[cidx], nframes);
             for(sidx=0; sidx<nframes; sidx++) {
-                *(jckbuf++) = jckbufI[(sidx*sndchans) + cidx];
+                *(jackbuf++) = jackbufI[(sidx*sndchans) + cidx];
             }
         }
     }
@@ -117,13 +119,13 @@ main (int argc, char *argv[])
 			sndchans = atoi(optarg);
             break;
         case 'n':
-            snprintf(jckname, JACK_NAME_SIZE, "%s", optarg);
+            snprintf(jackname, JACK_NAME_SIZE, "%s", optarg);
             break;
         case 'h':
             printf("Usage: jack_play_record [OPTION...] [-p play.wav | -c chans -r rec.wav]\n");
             printf("  -h,           print this help text\n");
             printf("  -c,           specify the number of channels (required for recording)\n");
-            printf("  -n, ")
+            printf("  -n, ");
             break;
 		// case '?':
 		// 	if (optopt == 'c')
@@ -140,13 +142,13 @@ main (int argc, char *argv[])
 	}
 
     /* ensure there's a reasonable jack client name if not already set */
-    if( jckname[0] == 0 ) {
-        snprintf(jckname, JACK_NAME_SIZE, "%s", \
+    if( jackname[0] == 0 ) {
+        snprintf(jackname, JACK_NAME_SIZE, "%s", \
             (sndmode==PLAY_MODE) ? (PLAY_NAME) : (REC_NAME)) ;
     }
 
 	/* open a client connection to the JACK server */
-	client = jack_client_open(jckname, options, &status, server_name);
+	client = jack_client_open(jackname, options, &status, server_name);
 	if (client == NULL) {
 		fprintf (stderr, "jack_client_open() failed, "
 			 "status = 0x%2.0x\n", status);
@@ -159,8 +161,8 @@ main (int argc, char *argv[])
 		fprintf (stderr, "JACK server started\n");
 	}
 	if (status & JackNameNotUnique) {
-		snprintf(jckname, JACK_NAME_SIZE, "%s", jack_get_client_name(client));
-		fprintf(stderr, "unique name `%s' assigned\n", &(jckname[0]));
+		snprintf(jackname, JACK_NAME_SIZE, "%s", jack_get_client_name(client));
+		fprintf(stderr, "unique name `%s' assigned\n", &(jackname[0]));
 	}
 
     /* with an unconfigured jack client, we can do some sndfile prep, like get the sample rate*/
@@ -203,12 +205,12 @@ main (int argc, char *argv[])
 	/* create two ports */
     for(cidx=0; cidx<sndchans; cidx++) {
         if(sndmode == PLAY_MODE){
-            jckout_ports[cidx] = jack_port_register (client, "output",
+            jackout_ports[cidx] = jack_port_register (client, "output",
                             JACK_DEFAULT_AUDIO_TYPE,
                             JackPortIsOutput, 0);
         }
         else if(sndmode == REC_MODE) {
-            jckin_ports[cidx] = jack_port_register (client, "input",
+            jackin_ports[cidx] = jack_port_register (client, "input",
                             JACK_DEFAULT_AUDIO_TYPE,
                             JackPortIsInput, 0);
         }
