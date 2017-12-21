@@ -115,6 +115,15 @@ jack_shutdown (void *arg)
 	exit (1);
 }
 
+void usage(void) {
+    printf("\n\n");
+    printf("Usage: jack_play_record [OPTION...] [-p play.wav | -c chans -r rec.wav]\n");
+    printf("  -h,           print this help text\n");
+    printf("  -c,           specify the number of channels (required for recording)\n");
+    printf("  -n,           specify the name of the jack client\n");
+    printf("\n\n");
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -126,6 +135,14 @@ main (int argc, char *argv[])
 
     int cidx, sidx;
 	char c;
+
+
+    // argc includes the binary - if the binary was called with NO arguments, just print usage...
+    if(argc <= 1) {
+        usage();
+        return 0;
+    }
+
 	while ((c = getopt (argc, argv, "prcnh")) != -1)
     switch (c)
 		{
@@ -144,10 +161,7 @@ main (int argc, char *argv[])
             snprintf(jackname, JACK_NAME_SIZE, "%s", optarg);
             break;
         case 'h':
-            printf("Usage: jack_play_record [OPTION...] [-p play.wav | -c chans -r rec.wav]\n");
-            printf("  -h,           print this help text\n");
-            printf("  -c,           specify the number of channels (required for recording)\n");
-            printf("  -n, ");
+            usage();
             break;
 		// case '?':
 		// 	if (optopt == 'c')
