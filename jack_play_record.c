@@ -55,13 +55,13 @@ int
 process (jack_nframes_t nframes, void *arg)
 {
     int cnt, cidx, sidx;
-	// jack_default_audio_sample_t *in, *out;
+    // jack_default_audio_sample_t *in, *out;
     if(sndmode == PLAY_MODE) {
         // read data from sndf in to interleaved buffer
         cnt = sf_readf_float(sndf, &(jackbufI[0]), nframes*sndchans);
         if(cnt < nframes ){
             sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
-            int cnt2 = sf_readf_float(sndf, &(jackbufI[cnt*sndchans]),
+            sf_count_t cnt2 = sf_readf_float(sndf, &(jackbufI[cnt*sndchans]),
                 (nframes-cnt)*sndfinfo.channels);
             if(cnt + cnt2 != nframes) {
                 printf("This is bad, almost certainly a bug...\n");
@@ -76,8 +76,30 @@ process (jack_nframes_t nframes, void *arg)
             }
         }
     }
-    else if(sndmode == REC_MODE){
-        printf("Implement me and fix me!\n");
+    else if(sndmode == REC_MODE) {
+        // get pointers for all jack port buffers
+        jack_default_audio_sample_t *jackbufs[JACK_PLAY_RECORD_MAX_PORTS];
+        for(cidx=0; cidx<sndchans; cidx++) {
+            jackbufs[cidx] = jack_port_get_buffer(jackin_ports[cidx], nframes);
+        }
+        
+        // write to sndfile one sample at a time
+        // set outer loop over frames/samples
+        for(sidx=0; sidx<nframes; sidx++) {
+            // set inner loop over channels/jackbufs
+            for(cidx=0; cidx<sndchans; cidx++) {
+                // this is naive, but might be fast enough
+                // the real problem is that this really ought to be threaded...
+                // but that means threading in C :-(
+                cnt = sf_write_float(sndf, (float *)&(jackbufs[cidx][sidx]), 1);
+            }
+        }
+
+
+
+
+
+
     }
 
 	return 0;      
