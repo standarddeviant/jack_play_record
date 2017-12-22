@@ -41,10 +41,12 @@ int sndchans = 0;
 
 char jackname[JACK_CLIENT_NAME_SIZE] = {0};
 
-// Interleaved buffer for dumping in/out of the the PaUtilRingBuffer
-jack_default_audio_sample_t jackbufI[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECORD_MAX_FRAMES]; 
-PaUtilRingBuffer *pa_ringbuf; // ringbuffer for input
-void * ringbuf_memory;
+// Interleaved buffers for dumping in/out of the the PaUtilRingBuffer
+// There is one for each thread, the fileio thread, and the jack thread
+jack_default_audio_sample_t linbufFILE[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECORD_MAX_FRAMES];
+jack_default_audio_sample_t linbufJACK[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECORD_MAX_FRAMES];
+PaUtilRingBuffer *pa_ringbuf; // ringbuffer for communicating between threads
+void * ringbuf_memory; // ringbuffer pointer for use with malloc/free
 int ringbuf_nframes = JACK_PLAY_RECORD_MAX_FRAMES;
 
 #define ISPOW2(x) ((x) > 0 && !((x) & (x-1)))
@@ -55,6 +57,48 @@ int nextpow2(int x) {
     int power = 2;
     while (x >>= 1) power <<= 1;
     return (int)(1 << power);
+}
+
+void *fileio_function(void *ptr) {
+    // int type = (int) ptr;
+    // fprintf(stderr,"Thread - %d\n",type);
+    // return  ptr;
+    int fcnt, nframes_write_available, nframes_read_available;
+    int nframes_read, nframes_written;
+
+    ptr = ptr; // FIXME - mollify compiler for now, , or change function input to be void...
+
+    while(1) {
+        if(sndmode == PLAY_MODE) {
+            nframes_write_available = 
+                PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
+            if( nframes_write_available > 0 ) {
+                // read data from sndf in to interleaved buffer
+                fcnt = sf_readf_float(sndf, &(linbufFILE[0]), nframes_write_available);
+                if(fcnt < nframes_write_available ) {
+                    sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
+                }
+                PaUtil_WriteRingBuffer(pa_ringbuf, &(linbufFILE[0]), fcnt);
+            }
+        }
+
+        else if(sndmode == REC_MODE) {
+            nframes_read_available = PaUtil_GetRingBufferReadAvailable(pa_ringbuf);
+            if( nframes_read_available > 0) {
+                nframes_read = PaUtil_ReadRingBuffer(
+                    pa_ringbuf, &(linbufFILE[0]), nframes_read_available);
+                nframes_written = sf_writef_float(sndf, &(linbufFILE[0]), fcnt);
+                if(nframes_read != nframes_written) {
+                    /* FIXME, report this error */
+                }
+            }
+        }
+
+        else{
+            /* FIXME, catch this error */
+        }
+        sched_yield();
+    } // end while(1)
 }
 
 /**
@@ -76,28 +120,16 @@ jack_process (jack_nframes_t nframes, void *arg)
     arg = arg;
     // jack_default_audio_sample_t *in, *out;
     if(sndmode == PLAY_MODE) {
-        // FIXME, move this logic to fileIO thread
-        // // read data from sndf in to interleaved buffer
-        // cnt = sf_readf_float(sndf, &(jackbufI[0]), nframes*sndchans);
-        // if(cnt < nframes ){
-        //     sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
-        //     int cnt2 = sf_readf_float(sndf, &(jackbufI[cnt*sndchans]),
-        //         (nframes-cnt)*sndfinfo.channels);
-        //     if(cnt + cnt2 != nframes) {
-        //         printf("This is bad, almost certainly a bug...\n");
-        //         // this should not happen, FIXME and error out
-        //     }
-        // }
 
         // read from pa_ringbuf
         nframes_read_available = PaUtil_GetRingBufferReadAvailable(pa_ringbuf);
         if(nframes_read_available < nframes) {
             /* FIXME, report underflow */
             /* FIXME, zero out (nframes - nframes_to_read) number of frames 
-                in jackbufI */
+                in linbufJACK */
         }
         nframes_read = PaUtil_ReadRingBuffer(
-            pa_ringbuf, &(jackbufI[0]), nframes);
+            pa_ringbuf, &(linbufJACK[0]), nframes);
         if(nframes_read != nframes) {
             printf("Underflow reading from pa_ringbuf\n");
         }
@@ -106,7 +138,7 @@ jack_process (jack_nframes_t nframes, void *arg)
         for(cidx=0; cidx<sndchans; cidx++) {
             jack_default_audio_sample_t *jackbuf = jack_port_get_buffer(jackout_ports[cidx], nframes);
             for(fidx=0; fidx<nframes; fidx++) {
-                *(jackbuf++) = jackbufI[(fidx*sndchans) + cidx];
+                *(jackbuf++) = linbufJACK[(fidx*sndchans) + cidx];
             }
         }
     } // end PLAY_MODE
@@ -118,22 +150,16 @@ jack_process (jack_nframes_t nframes, void *arg)
             jackbufs[cidx] = jack_port_get_buffer(jackin_ports[cidx], nframes);
         }
         
-        // write to jackbufI one sample at a time
+        // write to linbufJACK one sample at a time
         // set outer loop over frames/samples
-        sidx = 0; // use sample index to book-keep current index in to jackbufI
+        sidx = 0; // use sample index to book-keep current index in to linbufJACK
         for(fidx=0; fidx<nframes; fidx++) {
             // set inner loop over channels/jackbufs
             for(cidx=0; cidx<sndchans; cidx++) {
                 // this is naive, but might be fast enough
-                jackbufI[sidx++] = jackbufs[cidx][fidx];
+                linbufJACK[sidx++] = jackbufs[cidx][fidx];
             }
         }
-
-        // FIXME, put this logic in fileIO thread
-        // cnt = sf_writef_float(sndf, &(jackbufI[0]), nframes*sndchans);
-        // if(cnt != nframes*sndchans) {
-        //     printf("after writing to file, cnt (samples) = %d, but nframes*sndchans (%d * %d) = %d\n", cnt, nframes, sndchans, nframes*sndchans);
-        // }
 
         nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
         if( nframes_write_available < nframes) {
@@ -141,7 +167,7 @@ jack_process (jack_nframes_t nframes, void *arg)
         }
 
         nframes_written = PaUtil_WriteRingBuffer(
-            pa_ringbuf, &(jackbufI[0]), nframes);
+            pa_ringbuf, &(linbufJACK[0]), nframes);
         if( nframes_written != nframes) {
             /* FIXME, report overflow */
         }
@@ -185,6 +211,8 @@ int
 main (int argc, char *argv[])
 {
     // const char **ports;
+    pthread_t fileio_thread;
+    int thr = 1;
     const char *server_name = NULL;
     jack_options_t options = JackNullOption;
     jack_status_t status;
@@ -336,8 +364,8 @@ main (int argc, char *argv[])
     // if we're playing a file, let's pre-load the ring buffer with some data
     if(sndmode == PLAY_MODE){
         int nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
-        int nframes_read = sf_readf_float(sndf, &(jackbufI[0]), nframes_write_available);
-        int nframes_written = PaUtil_WriteRingBuffer(pa_ringbuf, &(jackbufI[0]), nframes_read);
+        int nframes_read = sf_readf_float(sndf, &(linbufJACK[0]), nframes_write_available);
+        int nframes_written = PaUtil_WriteRingBuffer(pa_ringbuf, &(linbufJACK[0]), nframes_read);
 
         if(nframes_write_available != nframes_read) {
             printf("WRN: in pre-loading pa_ringbuf, nframes_write_available = %d, nframes_read = %d\n",
@@ -348,6 +376,10 @@ main (int argc, char *argv[])
                 nframes_read, nframes_read);
         }
     }
+
+    // start the fileio_thread
+    pthread_create(&fileio_thread, NULL, *fileio_function, (void *) &(thr));
+
 
 	/* Tell the JACK server that we are ready to roll.  Our
 	 * process() callback will start running now. */

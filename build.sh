@@ -7,6 +7,6 @@ gcc -Wall -Wextra -Wunused         \
     jack_play_record.c             \
     pa_ringbuffer/pa_ringbuffer.c  \
     -I ./pa_ringbuffer/            \
-    -ljack -lsndfile
+    -ljack -lsndfile -lpthread
 
 
