@@ -75,11 +75,11 @@ void *fileio_function(void *ptr) {
                 PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
             if( nframes_write_available > 0 ) {
                 // read data from sndf in to interleaved buffer
-                fcnt = sf_readf_float(sndf, &(linbufFILE[0]), nframes_write_available);
-                if(fcnt < nframes_write_available ) {
+                nframes_read = sf_readf_float(sndf, &(linbufFILE[0]), nframes_write_available);
+                if(nframes_read < nframes_write_available ) {
                     sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
                 }
-                PaUtil_WriteRingBuffer(pa_ringbuf, &(linbufFILE[0]), fcnt);
+                nframes_written = PaUtil_WriteRingBuffer(pa_ringbuf, &(linbufFILE[0]), nframes_read);
             }
         }
 
@@ -88,9 +88,9 @@ void *fileio_function(void *ptr) {
             if( nframes_read_available > 0) {
                 nframes_read = PaUtil_ReadRingBuffer(
                     pa_ringbuf, &(linbufFILE[0]), nframes_read_available);
-                nframes_written = sf_writef_float(sndf, &(linbufFILE[0]), fcnt);
+                nframes_written = sf_writef_float(sndf, &(linbufFILE[0]), nframes_read);
                 if(nframes_read != nframes_written) {
-                    printf("\nWRN: in fileio_function / REC_MODE\n    nframes_read=%d\n   nframes_written=%d\n",
+                    printf("\nWRN: in fileio_function / REC_MODE\n    nframes_read(from ring buffer)=%d\n    nframes_written(to file)=%d\n",
                             nframes_read, nframes_written);
                 }
             }
@@ -341,14 +341,14 @@ main (int argc, char *argv[])
             jackout_ports[cidx] = jack_port_register(client, portname,                    
                     JACK_DEFAULT_AUDIO_TYPE,
                     JackPortIsOutput, 0);
-            printf("jackout_ports[%d] = %p\n", cidx, jackout_ports[cidx]);
+            /* printf("jackout_ports[%d] = %p\n", cidx, jackout_ports[cidx]); */
         }
         else if(sndmode == REC_MODE) {
             snprintf(portname, JACK_PORT_NAME_SIZE, "in_%02d", cidx+1);
             jackin_ports[cidx] = jack_port_register (client, portname,
                     JACK_DEFAULT_AUDIO_TYPE,
                     JackPortIsInput, 0);
-            printf("jackin_ports[%d] = %p\n", cidx, jackin_ports[cidx]);
+            /* printf("jackin_ports[%d] = %p\n", cidx, jackin_ports[cidx]); */
         }
         // else {} , FIXME
     }
@@ -452,6 +452,9 @@ main (int argc, char *argv[])
 	   had some other way to exit besides being killed,
 	   they would be important to call.
 	*/
+
+    /* close soundfile */
+    sf_close(sndf);
 
 	jack_client_close (client);
 	exit (0);
