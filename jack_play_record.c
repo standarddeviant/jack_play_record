@@ -64,7 +64,7 @@ void *fileio_function(void *ptr) {
     // int type = (int) ptr;
     // fprintf(stderr,"Thread - %d\n",type);
     // return  ptr;
-    int fcnt, nframes_write_available, nframes_read_available;
+    int nframes_write_available, nframes_read_available;
     int nframes_read, nframes_written;
 
     ptr = ptr; // mollify compiler
@@ -328,10 +328,6 @@ main (int argc, char *argv[])
 
     jack_on_shutdown (client, jack_shutdown, 0);
 
-    /* display sample rate */
-    printf ("engine sample rate: %" PRIu32 "\n",
-        jack_get_sample_rate (client));
-    
     /* FIXME, throw error if file sample rate and jack sample rate are different */
 
     /* create jack ports */
@@ -357,7 +353,6 @@ main (int argc, char *argv[])
     /* Let's set up a pa_ringbuffer, for single producer, single consumer */
     /* ensure ringbuf_nframes is a power of 2 */
     ringbuf_nframes = nextpow2(ringbuf_nframes);
-    printf("after nextpow2, ringbuf_nframes = %d\n", ringbuf_nframes);
 
     /* malloc space for pa_ringbuffer */
     ringbuf_memory = malloc( 
