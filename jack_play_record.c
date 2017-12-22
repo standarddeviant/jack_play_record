@@ -13,8 +13,8 @@
 #include <ctype.h>
 
 #include <sndfile.h>
-
 #include <jack/jack.h>
+#include <pa_ringbuffer.h>
 
 #define JACK_PLAY_RECORD_MAX_PORTS (64)
 #define JACK_PLAY_RECORD_MAX_FRAMES (16384)
@@ -38,11 +38,21 @@ int sndchans = 0;
 
 char jackname[JACK_CLIENT_NAME_SIZE] = {0};
 
-// Interleaved buffer
+// Interleaved buffer for dumping in/out of the the PaUtilRingBuffer
 jack_default_audio_sample_t jackbufI[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECORD_MAX_FRAMES]; 
+PaUtilRingBuffer *pa_ringbuf; // ringbuffer for input
+void * ringbuf_memory;
+int ringbuf_nframes = JACK_PLAY_RECORD_MAX_FRAMES;
 
-// jack_default_audio_sample_t jackbufD[JACK_PLAY_RECORD_MAX_PORTS][JACK_PLAY_RECORD_MAX_FRAMES];  // De-interleaved
-// jack_default_audio_sample_t jackbufD1[JACK_PLAY_RECORD_MAX_FRAMES];  // De-interleaved
+#define ISPOW2(x) ((x) > 0 && !((x) & (x-1)))
+int nextpow2(int x) {
+    if(ISPOW2(x)) {
+        return x;
+    }
+    int power = 2;
+    while (x >>= 1) power <<= 1;
+    return (int)(1 << power);
+}
 
 /**
  * The process callback for this JACK application is called in a
@@ -56,19 +66,35 @@ int
 process (jack_nframes_t nframes, void *arg)
 {
     int cnt, cidx, fidx, sidx;
+    int nframes_read_available, nframes_write_available;
+    int nframes_read, nframes_written;
+
     // jack_default_audio_sample_t *in, *out;
     if(sndmode == PLAY_MODE) {
-        // read data from sndf in to interleaved buffer
-        cnt = sf_readf_float(sndf, &(jackbufI[0]), nframes*sndchans);
-        if(cnt < nframes ){
-            sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
-            int cnt2 = sf_readf_float(sndf, &(jackbufI[cnt*sndchans]),
-                (nframes-cnt)*sndfinfo.channels);
-            if(cnt + cnt2 != nframes) {
-                printf("This is bad, almost certainly a bug...\n");
-                // this should not happen, FIXME and error out
-            }
+        // FIXME, move this logic to fileIO thread
+        // // read data from sndf in to interleaved buffer
+        // cnt = sf_readf_float(sndf, &(jackbufI[0]), nframes*sndchans);
+        // if(cnt < nframes ){
+        //     sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
+        //     int cnt2 = sf_readf_float(sndf, &(jackbufI[cnt*sndchans]),
+        //         (nframes-cnt)*sndfinfo.channels);
+        //     if(cnt + cnt2 != nframes) {
+        //         printf("This is bad, almost certainly a bug...\n");
+        //         // this should not happen, FIXME and error out
+        //     }
+        // }
+
+        // read from pa_ringbuf
+        nframes_read_available = PaUtil_GetRingBufferReadAvailable(pa_ringbuf);
+        if(nframes_read_available < nframes) {
+            /* FIXME, report underflow */
+            /* FIXME, zero out (nframes - nframes_to_read) number of frames 
+                in jackbufI */
         }
+        nframes_read = PaUtil_ReadRingBuffer(
+            pa_ringbuf, &(jackbufI[0]), nframes);
+        // FIXME, catch error
+
         // get jack buffers as needed, and write directly in to those buffers
         for(cidx=0; cidx<sndchans; cidx++) {
             jack_default_audio_sample_t *jackbuf = jack_port_get_buffer(jackout_ports[cidx], nframes);
@@ -76,7 +102,8 @@ process (jack_nframes_t nframes, void *arg)
                 *(jackbuf++) = jackbufI[(fidx*sndchans) + cidx];
             }
         }
-    }
+    } // end PLAY_MODE
+
     else if(sndmode == REC_MODE) {
         // get pointers for all jack port buffers
         jack_default_audio_sample_t *jackbufs[JACK_PLAY_RECORD_MAX_PORTS];
@@ -84,27 +111,44 @@ process (jack_nframes_t nframes, void *arg)
             jackbufs[cidx] = jack_port_get_buffer(jackin_ports[cidx], nframes);
         }
         
-        // write to sndfile one sample at a time
+        // write to jackbufI one sample at a time
         // set outer loop over frames/samples
         sidx = 0; // use sample index to book-keep current index in to jackbufI
         for(fidx=0; fidx<nframes; fidx++) {
             // set inner loop over channels/jackbufs
             for(cidx=0; cidx<sndchans; cidx++) {
                 // this is naive, but might be fast enough
-                // the real problem is that this really ought to be threaded...
-                // but that means threading in C :-/
                 jackbufI[sidx++] = jackbufs[cidx][fidx];
             }
         }
 
-        cnt = sf_writef_float(sndf, &(jackbufI[0]), nframes*sndchans);
-        if(cnt != nframes*sndchans) {
-            printf("after writing to file, cnt (samples) = %d, but nframes*sndchans (%d * %d) = %d\n", cnt, nframes, sndchans, nframes*sndchans);
+        // FIXME, put this logic in fileIO thread
+        // cnt = sf_writef_float(sndf, &(jackbufI[0]), nframes*sndchans);
+        // if(cnt != nframes*sndchans) {
+        //     printf("after writing to file, cnt (samples) = %d, but nframes*sndchans (%d * %d) = %d\n", cnt, nframes, sndchans, nframes*sndchans);
+        // }
+
+        nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
+        if( nframes_write_available < nframes) {
+            /* FIXME, report overflow problem */
         }
+
+        nframes_written = PaUtil_WriteRingBuffer(
+            pa_ringbuf, &(jackbufI[0]), nframes);
+        if( nframes_written != nframes) {
+            /* FIXME, report overflow */
+        }
+    } // end REC_MODE
+
+    else {
+        /* FIXME, catch this error */
     }
 
-	return 0;      
+    return 0;
 }
+
+
+
 
 /**
  * JACK calls this shutdown_callback if the server ever shuts down or
@@ -113,7 +157,7 @@ process (jack_nframes_t nframes, void *arg)
 void
 jack_shutdown (void *arg)
 {
-	exit (1);
+    exit (1);
 }
 
 void usage(void) {
@@ -122,60 +166,52 @@ void usage(void) {
     printf("  -h,           print this help text\n");
     printf("  -c,           specify the number of channels (required for recording)\n");
     printf("  -n,           specify the name of the jack client\n");
+    printf("  -f,           specify the intended nframes for use with jack server\n");
+    printf("                note, that this will save on memory, but is unsafe if the\n");
+    printf("                jack server nframes value is ever increased");
     printf("\n\n");
 }
 
 int
 main (int argc, char *argv[])
 {
-	const char **ports;
-	// const char *client_name = PLAY_NAME;
-	const char *server_name = NULL;
-	jack_options_t options = JackNullOption;
-	jack_status_t status;
+    const char **ports;
+    // const char *client_name = PLAY_NAME;
+    const char *server_name = NULL;
+    jack_options_t options = JackNullOption;
+    jack_status_t status;
 
     int cidx, sidx;
-	int c;
+    int c;
 
     char portname[JACK_PORT_NAME_SIZE] = {0};
 
-	while ((c = getopt (argc, argv, "p:r:c:n:h")) != -1)
+    while ((c = getopt (argc, argv, "p:r:c:n:f:h")) != -1)
     switch (c)
-		{
-		case 'p':
-			sndmode = PLAY_MODE;
-			snprintf(sndfname, SND_FNAME_SIZE, "%s", optarg);
-            printf("p: sndfname = -->%s<--, sndmode = %d, sndchans = %d\n", sndfname, sndmode, sndchans);
-        	break;
+        {
+        case 'p':
+            sndmode = PLAY_MODE;
+            snprintf(sndfname, SND_FNAME_SIZE, "%s", optarg);
+            break;
       	case 'r':
-			sndmode = REC_MODE;
-			snprintf(sndfname, SND_FNAME_SIZE, "%s", optarg);
-            printf("r: sndfname = -->%s<--, sndmode = %d, sndchans = %d\n", sndfname, sndmode, sndchans);
-        	break;
+            sndmode = REC_MODE;
+            snprintf(sndfname, SND_FNAME_SIZE, "%s", optarg);
+            break;
       	case 'c':
-			sndchans = atoi(optarg);
-            printf("c: sndfname = -->%s<--, sndmode = %d, sndchans = %d\n", sndfname, sndmode, sndchans);
+            sndchans = atoi(optarg);
             break;
         case 'n':
             snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", optarg);
-            printf("n: sndfname = -->%s<--, sndmode = %d, sndchans = %d\n", sndfname, sndmode, sndchans);
+            break;
+        case 'f':
+            ringbuf_nframes = atoi(optarg);
             break;
         case 'h':
             usage();
             return 0;
-		// case '?':
-		// 	if (optopt == 'c')
-		// 		fprintf (stderr, "Option -%c requires an argument.\n", optopt);
-		// 	else if (isprint (optopt))
-		// 		fprintf (stderr, "Unknown option `-%c'.\n", optopt);
-		// 	else
-		// 		fprintf (stderr,
-		// 				"Unknown option character `\\x%x'.\n",
-		// 				optopt);
-		// 	return 1;
-		default:
-    	    abort ();
-	}
+        default:
+            abort ();
+    }
 
     /* after parsing args, if sndfname is empty, then just print usage */
     if(0 == strlen((const char *)sndfname)) {
@@ -237,25 +273,25 @@ main (int argc, char *argv[])
                 sndfname, sferr);
     }
 
-	/* tell the JACK server to call `process()' whenever
-	   there is work to be done.
-	*/
-	jack_set_process_callback (client, process, 0);
+    /* tell the JACK server to call `process()' whenever
+        there is work to be done.
+    */
+    jack_set_process_callback (client, process, 0);
 
-	/* tell the JACK server to call `jack_shutdown()' if
-	   it ever shuts down, either entirely, or if it
-	   just decides to stop calling us.
-	*/
+    /* tell the JACK server to call `jack_shutdown()' if
+        it ever shuts down, either entirely, or if it
+        just decides to stop calling us.
+    */
 
-	jack_on_shutdown (client, jack_shutdown, 0);
+    jack_on_shutdown (client, jack_shutdown, 0);
 
-	/* display the current sample rate. 
-	 */
+    /* display sample rate */
+    printf ("engine sample rate: %" PRIu32 "\n",
+        jack_get_sample_rate (client));
+    
+    /* FIXME, throw error if file sample rate and jack sample rate are different */
 
-	printf ("engine sample rate: %" PRIu32 "\n",
-		jack_get_sample_rate (client));
-
-	/* create two ports */
+    /* create jack ports */
     for(cidx=0; cidx<sndchans; cidx++) {
         if(sndmode == PLAY_MODE){
             snprintf(portname, JACK_PORT_NAME_SIZE, "out_%02d", cidx+1);
@@ -274,9 +310,37 @@ main (int argc, char *argv[])
         // else {} , FIXME
     }
 
-    // add error case
-    // else{
-    // }
+    /* Let's set up a pa_ringbuffer, for single producer, single consumer */
+    /* ensure ringbuf_nframes is a power of 2 */
+    ringbuf_nframes = nextpow2(ringbuf_nframes);
+    /* malloc space for pa_ringbuffer */
+    ringbuf_memory = malloc( 
+        4 * sndchans * ringbuf_nframes *sizeof(jack_default_audio_sample_t));
+
+    // ring_buffer_size_t PaUtil_InitializeRingBuffer ( PaUtilRingBuffer * rbuf,
+    //     ring_buffer_size_t elementSizeBytes,
+    //     ring_buffer_size_t elementCount,
+    //     void * dataPtr )
+    PaUtil_InitializeRingBuffer(pa_ringbuf, 
+        sizeof(jack_default_audio_sample_t) * sndchans,
+        4 * ringbuf_nframes,
+        ringbuf_memory);
+    
+    // if we're playing a file, let's pre-load the ring buffer with some data
+    if(sndmode == PLAY_MODE){
+        int nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
+        int nframes_read = sf_readf_float(sndf, &(jackbufI[0]), nframes_write_available);
+        int nframes_written = PaUtil_WriteRingBuffer(pa_ringbuf, &(jackbufI[0]), nframes_read);
+
+        if(nframes_write_available != nframes_read) {
+            printf("WRN: in pre-loading pa_ringbuf, nframes_write_available = %d, nframes_read = %d\n",
+                nframes_write_available, nframes_read);
+        }
+        if(nframes_read != nframes_written) {
+            printf("WRN: in pre-loading pa_ringbuf, nframes_read = %d, nframes_read = %d\n",
+                nframes_read, nframes_read);
+        }
+    }
 
 	/* Tell the JACK server that we are ready to roll.  Our
 	 * process() callback will start running now. */
