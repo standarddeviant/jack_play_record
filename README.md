@@ -1,4 +1,4 @@
-# Project Title
+# jack_play_record
 
 After looking for a convenient command line tool, that reliably played and recorded 
 multichannel wave files in JACK, I came up short.  So I wrote `jack_play_record` to 
@@ -7,7 +7,7 @@ email me or file an issue to update the README.
 
 ## Getting Started
 
-To build the code, change to `jack_play_record` directory on a linux system, and run
+To build the code, change to the `jack_play_record` directory on a linux system, and run
 ```
 ./build.sh
 ```
@@ -32,13 +32,20 @@ the jack client is named `cool_client`, you can issue the following:
 ./jack_play_record -r sweet_sounds.wav -c 4 -n cool_client
 ```
 
+When that file has finished recording, you can play that same file back in to jack:
+```
+./jack_play_record -p sweet_sounds.wav -n really_cool_client
+```
+
+The order of the command line arguments is irrelevant.
+
 
 ### Prerequisites
 
 The `build.sh` script is very simple, but requires the following libraries
-* libjack
-* libsndfile
-* libpthread
+* `libjack`
+* `libsndfile`
+* `libpthread`
 
 ## Authors
 
@@ -51,5 +58,5 @@ This project is licensed under the Unlicense License - see the [LICENSE](LICENSE
 ## Acknowledgments
 
 * Thanks to the developers of `JACK`, `libsndfile`, `PortAudio` and `gcc`
-* Thanks to Spencer Russell ( @ssfr ) for introducing me to the convenient `pa_ringbuffer` code
+* Thanks to [Spencer Russell](https://github.com/ssfrr) for introducing me to the convenient `pa_ringbuffer` code
 
