@@ -2,7 +2,8 @@
 
 
 
-gcc -o jack_play_record            \
+gcc -Wall -Wextra -Wunused         \
+    -o jack_play_record            \
     jack_play_record.c             \
     pa_ringbuffer/pa_ringbuffer.c  \
     -I ./pa_ringbuffer/            \

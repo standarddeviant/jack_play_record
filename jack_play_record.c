@@ -4,6 +4,7 @@
  * as they would be used by many applications.
  */
 
+// "standard" libraries
 #include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
@@ -12,6 +13,8 @@
 #include <string.h>
 #include <ctype.h>
 
+// libraries/code that require building/linking
+#include <pthread.h>
 #include <sndfile.h>
 #include <jack/jack.h>
 #include <pa_ringbuffer.h>
@@ -63,12 +66,14 @@ int nextpow2(int x) {
  * the user (e.g. using Ctrl-C on a unix-ish operating system)
  */
 int
-process (jack_nframes_t nframes, void *arg)
+jack_process (jack_nframes_t nframes, void *arg)
 {
-    int cnt, cidx, fidx, sidx;
-    int nframes_read_available, nframes_write_available;
-    int nframes_read, nframes_written;
+    int cidx, sidx;
+    jack_nframes_t fidx, nframes_read_available, nframes_write_available;
+    jack_nframes_t nframes_read, nframes_written;
 
+    // silence compiler
+    arg = arg;
     // jack_default_audio_sample_t *in, *out;
     if(sndmode == PLAY_MODE) {
         // FIXME, move this logic to fileIO thread
@@ -93,7 +98,9 @@ process (jack_nframes_t nframes, void *arg)
         }
         nframes_read = PaUtil_ReadRingBuffer(
             pa_ringbuf, &(jackbufI[0]), nframes);
-        // FIXME, catch error
+        if(nframes_read != nframes) {
+            printf("Underflow reading from pa_ringbuf\n");
+        }
 
         // get jack buffers as needed, and write directly in to those buffers
         for(cidx=0; cidx<sndchans; cidx++) {
@@ -157,6 +164,8 @@ process (jack_nframes_t nframes, void *arg)
 void
 jack_shutdown (void *arg)
 {
+    free(ringbuf_memory);
+    arg=arg; /* silence compiler */
     exit (1);
 }
 
@@ -175,14 +184,12 @@ void usage(void) {
 int
 main (int argc, char *argv[])
 {
-    const char **ports;
-    // const char *client_name = PLAY_NAME;
+    // const char **ports;
     const char *server_name = NULL;
     jack_options_t options = JackNullOption;
     jack_status_t status;
 
-    int cidx, sidx;
-    int c;
+    int cidx, c;
 
     char portname[JACK_PORT_NAME_SIZE] = {0};
 
@@ -276,7 +283,7 @@ main (int argc, char *argv[])
     /* tell the JACK server to call `process()' whenever
         there is work to be done.
     */
-    jack_set_process_callback (client, process, 0);
+    jack_set_process_callback (client, jack_process, 0);
 
     /* tell the JACK server to call `jack_shutdown()' if
         it ever shuts down, either entirely, or if it
