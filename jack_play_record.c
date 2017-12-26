@@ -46,7 +46,8 @@ char jackname[JACK_CLIENT_NAME_SIZE] = {0};
 // There is one for each thread, the fileio thread, and the jack thread
 jack_default_audio_sample_t linbufFILE[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECORD_MAX_FRAMES];
 jack_default_audio_sample_t linbufJACK[JACK_PLAY_RECORD_MAX_PORTS * JACK_PLAY_RECORD_MAX_FRAMES];
-PaUtilRingBuffer *pa_ringbuf; // ringbuffer for communicating between threads
+PaUtilRingBuffer pa_ringbuf_; // ringbuffer for communicating between threads
+PaUtilRingBuffer *pa_ringbuf = &(pa_ringbuf_);
 void * ringbuf_memory; // ringbuffer pointer for use with malloc/free
 int ringbuf_nframes = JACK_PLAY_RECORD_MAX_FRAMES;
 
@@ -64,10 +65,10 @@ void *fileio_function(void *ptr) {
     // int type = (int) ptr;
     // fprintf(stderr,"Thread - %d\n",type);
     // return  ptr;
-    int fcnt, nframes_write_available, nframes_read_available;
+    int nframes_write_available, nframes_read_available;
     int nframes_read, nframes_written;
 
-    ptr = ptr; // FIXME - mollify compiler for now, , or change function input to be void...
+    ptr = ptr; // mollify compiler
 
     while(1) {
         if(sndmode == PLAY_MODE) {
@@ -75,11 +76,11 @@ void *fileio_function(void *ptr) {
                 PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
             if( nframes_write_available > 0 ) {
                 // read data from sndf in to interleaved buffer
-                fcnt = sf_readf_float(sndf, &(linbufFILE[0]), nframes_write_available);
-                if(fcnt < nframes_write_available ) {
+                nframes_read = sf_readf_float(sndf, &(linbufFILE[0]), nframes_write_available);
+                if(nframes_read < nframes_write_available ) {
                     sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
                 }
-                PaUtil_WriteRingBuffer(pa_ringbuf, &(linbufFILE[0]), fcnt);
+                nframes_written = PaUtil_WriteRingBuffer(pa_ringbuf, &(linbufFILE[0]), nframes_read);
             }
         }
 
@@ -88,9 +89,10 @@ void *fileio_function(void *ptr) {
             if( nframes_read_available > 0) {
                 nframes_read = PaUtil_ReadRingBuffer(
                     pa_ringbuf, &(linbufFILE[0]), nframes_read_available);
-                nframes_written = sf_writef_float(sndf, &(linbufFILE[0]), fcnt);
+                nframes_written = sf_writef_float(sndf, &(linbufFILE[0]), nframes_read);
                 if(nframes_read != nframes_written) {
-                    /* FIXME, report this error */
+                    printf("\nWRN: in fileio_function / REC_MODE\n    nframes_read(from ring buffer)=%d\n    nframes_written(to file)=%d\n",
+                            nframes_read, nframes_written);
                 }
             }
         }
@@ -209,6 +211,12 @@ void usage(void) {
     printf("\n\n");
 }
 
+void fyi(void) {
+    char *play_record = sndmode==PLAY_MODE ? "play from" : "record to";
+    printf("\nINFO: Attempting to\n    %s %s, where\n    channels=%d, and \n    client-name='%s'\n\n",
+            play_record, sndfname, sndchans, jackname);
+}
+
 int
 main (int argc, char *argv[])
 {
@@ -219,7 +227,7 @@ main (int argc, char *argv[])
     jack_options_t options = JackNullOption;
     jack_status_t status;
 
-    int cidx, c;
+    int cidx, c, err;
 
     char portname[JACK_PORT_NAME_SIZE] = {0};
 
@@ -264,7 +272,9 @@ main (int argc, char *argv[])
         snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", \
             (sndmode==PLAY_MODE) ? (PLAY_NAME) : (REC_NAME)) ;
     }
-    printf("DBG: jackname = %s\n", jackname);
+
+    /* let user know what settings have been parsed */
+    fyi();
 
     /* force 0 <= waitchans <= sndchans */
     waitchans = waitchans <        0 ?        0 : waitchans;
@@ -327,10 +337,6 @@ main (int argc, char *argv[])
 
     jack_on_shutdown (client, jack_shutdown, 0);
 
-    /* display sample rate */
-    printf ("engine sample rate: %" PRIu32 "\n",
-        jack_get_sample_rate (client));
-    
     /* FIXME, throw error if file sample rate and jack sample rate are different */
 
     /* create jack ports */
@@ -340,34 +346,44 @@ main (int argc, char *argv[])
             jackout_ports[cidx] = jack_port_register(client, portname,                    
                     JACK_DEFAULT_AUDIO_TYPE,
                     JackPortIsOutput, 0);
-            printf("jackout_ports[%d] = %p\n", cidx, jackout_ports[cidx]);
+            /* printf("jackout_ports[%d] = %p\n", cidx, jackout_ports[cidx]); */
         }
         else if(sndmode == REC_MODE) {
             snprintf(portname, JACK_PORT_NAME_SIZE, "in_%02d", cidx+1);
             jackin_ports[cidx] = jack_port_register (client, portname,
                     JACK_DEFAULT_AUDIO_TYPE,
                     JackPortIsInput, 0);
-            printf("jackin_ports[%d] = %p\n", cidx, jackin_ports[cidx]);
+            /* printf("jackin_ports[%d] = %p\n", cidx, jackin_ports[cidx]); */
         }
         // else {} , FIXME
     }
 
+
     /* Let's set up a pa_ringbuffer, for single producer, single consumer */
     /* ensure ringbuf_nframes is a power of 2 */
     ringbuf_nframes = nextpow2(ringbuf_nframes);
+
     /* malloc space for pa_ringbuffer */
     ringbuf_memory = malloc( 
-        4 * sndchans * ringbuf_nframes *sizeof(jack_default_audio_sample_t));
+        sizeof(jack_default_audio_sample_t) * sndchans * 4 * ringbuf_nframes);
 
     // ring_buffer_size_t PaUtil_InitializeRingBuffer ( PaUtilRingBuffer * rbuf,
     //     ring_buffer_size_t elementSizeBytes,
     //     ring_buffer_size_t elementCount,
     //     void * dataPtr )
-    PaUtil_InitializeRingBuffer(pa_ringbuf, 
+    err = PaUtil_InitializeRingBuffer(pa_ringbuf, 
         sizeof(jack_default_audio_sample_t) * sndchans,
         4 * ringbuf_nframes,
         ringbuf_memory);
+    if(err) {
+        printf("encountered error code (%d) trying to call PaUtil_InitializeRingBuffer\n",err);
+    }
     
+
+    //return 0; // yoyoyo
+
+
+
     // if we're playing a file, let's pre-load the ring buffer with some data
     if(sndmode == PLAY_MODE){
         int nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
