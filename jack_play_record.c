@@ -38,6 +38,7 @@ SNDFILE *sndf;
 SF_INFO sndfinfo;
 int sndmode = PLAY_MODE;
 int sndchans = 0;
+int waitchans = 0;
 
 char jackname[JACK_CLIENT_NAME_SIZE] = {0};
 
@@ -198,12 +199,13 @@ jack_shutdown (void *arg)
 void usage(void) {
     printf("\n\n");
     printf("Usage: jack_play_record [OPTION...] [-p play.wav | -c chans -r rec.wav]\n");
-    printf("  -h,           print this help text\n");
-    printf("  -c,           specify the number of channels (required for recording)\n");
-    printf("  -n,           specify the name of the jack client\n");
-    printf("  -f,           specify the intended nframes for use with jack server\n");
-    printf("                note, that this will save on memory, but is unsafe if the\n");
-    printf("                jack server nframes value is ever increased");
+    printf("  -h,    print this help text\n");
+    printf("  -c,    specify the number of channels (required for recording)\n");
+    printf("  -n,    specify the name of the jack client\n");
+    printf("  -f,    specify the intended nframes for use with jack server\n");
+    printf("         note, that this will save on memory, but is unsafe if the\n");
+    printf("         jack server nframes value is ever increased");
+    printf("  -w,    wait until W ports have been connected before playing or recording\n");
     printf("\n\n");
 }
 
@@ -221,7 +223,7 @@ main (int argc, char *argv[])
 
     char portname[JACK_PORT_NAME_SIZE] = {0};
 
-    while ((c = getopt (argc, argv, "p:r:c:n:f:h")) != -1)
+    while ((c = getopt (argc, argv, "p:r:c:n:f:w:h")) != -1)
     switch (c)
         {
         case 'p':
@@ -241,6 +243,9 @@ main (int argc, char *argv[])
         case 'f':
             ringbuf_nframes = atoi(optarg);
             break;
+        case 'w':
+            waitchans = atoi(optarg);
+            break;
         case 'h':
             usage();
             return 0;
@@ -259,9 +264,11 @@ main (int argc, char *argv[])
         snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", \
             (sndmode==PLAY_MODE) ? (PLAY_NAME) : (REC_NAME)) ;
     }
-
-
     printf("DBG: jackname = %s\n", jackname);
+
+    /* force 0 <= waitchans <= sndchans */
+    waitchans = waitchans <        0 ?        0 : waitchans;
+    waitchans = waitchans > sndchans ? sndchans : waitchans;
 
 	/* open a client connection to the JACK server */
 	client = jack_client_open(jackname, options, &status, server_name);
@@ -377,62 +384,90 @@ main (int argc, char *argv[])
         }
     }
 
+    // if waitchans > 0, let's wait until waitchans channels have been connected
+    if(waitchans > 0) {
+        int connectedchans;
+        while(1) {
+            /* count number of connected channels */
+            connectedchans = 0;
+            for(cidx=0; cidx<sndchans; cidx++) {
+                if(sndmode == PLAY_MODE) {
+                    connectedchans += jack_port_connected(jackout_ports[cidx]) ? 1 : 0;
+                }
+                else if(sndmode == REC_MODE) {
+                    connectedchans += jack_port_connected(jackin_ports[cidx]) ? 1 : 0;
+                }
+                else {
+                    /* FIXME catch error */
+                }
+            }
+            /* if connected channels is large enough, 
+            break out of this loop and start playing/recording */
+            if(connectedchans >= waitchans) {
+                break;
+            }
+
+            /* yield thread while in waiting state */
+            sched_yield();
+        }
+
+    }
+
     // start the fileio_thread
     pthread_create(&fileio_thread, NULL, *fileio_function, (void *) &(thr));
 
+    /* Tell the JACK server that we are ready to roll.  Our
+    * process() callback will start running now. */
 
-	/* Tell the JACK server that we are ready to roll.  Our
-	 * process() callback will start running now. */
+    if (jack_activate (client)) {
+        fprintf (stderr, "cannot activate client");
+        exit (1);
+    }
 
-	if (jack_activate (client)) {
-		fprintf (stderr, "cannot activate client");
-		exit (1);
-	}
-
-	/* Connect the ports.  You can't do this before the client is
-	 * activated, because we can't make connections to clients
-	 * that aren't running.  Note the confusing (but necessary)
-	 * orientation of the driver backend ports: playback ports are
-	 * "input" to the backend, and capture ports are "output" from
-	 * it.
-	 */
+    /* Connect the ports.  You can't do this before the client is
+    * activated, because we can't make connections to clients
+    * that aren't running.  Note the confusing (but necessary)
+    * orientation of the driver backend ports: playback ports are
+    * "input" to the backend, and capture ports are "output" from
+    * it.
+    */
 
     /* FIXME add command line arg to auto-connect to a block... */
-	// ports = jack_get_ports (client, NULL, NULL,
-	// 			JackPortIsPhysical|JackPortIsOutput);
-	// if (ports == NULL) {
-	// 	fprintf(stderr, "no physical capture ports\n");
-	// 	exit (1);
-	// }
+    // ports = jack_get_ports (client, NULL, NULL,
+    // 			JackPortIsPhysical|JackPortIsOutput);
+    // if (ports == NULL) {
+    // 	fprintf(stderr, "no physical capture ports\n");
+    // 	exit (1);
+    // }
 
-	// if (jack_connect (client, ports[0], jack_port_name (input_port))) {
-	// 	fprintf (stderr, "cannot connect input ports\n");
-	// }
+    // if (jack_connect (client, ports[0], jack_port_name (input_port))) {
+    // 	fprintf (stderr, "cannot connect input ports\n");
+    // }
 
-	// free (ports);
-	
-	// ports = jack_get_ports (client, NULL, NULL,
-	// 			JackPortIsPhysical|JackPortIsInput);
-	// if (ports == NULL) {
-	// 	fprintf(stderr, "no physical playback ports\n");
-	// 	exit (1);
-	// }
+    // free (ports);
 
-	// if (jack_connect (client, jack_port_name (output_port), ports[0])) {
-	// 	fprintf (stderr, "cannot connect output ports\n");
-	// }
+    // ports = jack_get_ports (client, NULL, NULL,
+    // 			JackPortIsPhysical|JackPortIsInput);
+    // if (ports == NULL) {
+    // 	fprintf(stderr, "no physical playback ports\n");
+    // 	exit (1);
+    // }
 
-	// free (ports);
+    // if (jack_connect (client, jack_port_name (output_port), ports[0])) {
+    // 	fprintf (stderr, "cannot connect output ports\n");
+    // }
 
-	/* keep running until stopped by the user */
+    // free (ports);
 
-	sleep (-1);
+    /* keep running until stopped by the user */
 
-	/* this is never reached but if the program
-	   had some other way to exit besides being killed,
-	   they would be important to call.
-	*/
+    sleep (-1);
 
-	jack_client_close (client);
-	exit (0);
+    /* this is never reached but if the program
+        had some other way to exit besides being killed,
+        they would be important to call.
+    */
+
+    jack_client_close (client);
+    exit (0);
 }
