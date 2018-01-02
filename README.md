@@ -17,12 +17,13 @@ That should leave an executable in the same directory named `jack_play_record`
 There are examples below, but the help text is pretty straightforward:
 ```
 Usage: jack_play_record [OPTION...] [-p play.wav | -c chans -r rec.wav]
--h,           print this help text
--c,           specify the number of channels (required for recording)
--n,           specify the name of the jack client
--f,           specify the intended nframes for use with jack server
-              note, that this will save on memory, but is unsafe if the
-              jack server nframes value is ever increased
+  -h,    print this help text
+  -c,    specify the number of channels (required for recording)
+  -n,    specify the name of the jack client
+  -f,    specify the intended nframes for use with jack server
+         note, that this will save on memory, but is unsafe if the
+         jack server nframes value is ever increased
+  -w,    wait until W ports have been connected before playing or recording
 ```
 
 If you want to record a four-channel wave file named `sweet_sounds.wav`, where 

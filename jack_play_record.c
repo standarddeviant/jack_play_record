@@ -206,7 +206,7 @@ void usage(void) {
     printf("  -n,    specify the name of the jack client\n");
     printf("  -f,    specify the intended nframes for use with jack server\n");
     printf("         note, that this will save on memory, but is unsafe if the\n");
-    printf("         jack server nframes value is ever increased");
+    printf("         jack server nframes value is ever increased\n");
     printf("  -w,    wait until W ports have been connected before playing or recording\n");
     printf("\n\n");
 }
