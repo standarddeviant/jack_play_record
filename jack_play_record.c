@@ -217,8 +217,7 @@ void fyi(void) {
             play_record, sndfname, sndchans, jackname);
 }
 
-int
-main (int argc, char *argv[])
+int main (int argc, char *argv[])
 {
     // const char **ports;
     pthread_t fileio_thread;

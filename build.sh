@@ -9,4 +9,9 @@ gcc -Wall -Wextra -Wunused         \
     -I ./pa_ringbuffer/            \
     -ljack -lsndfile -lpthread
 
+gcc -Wall -Wextra -Wunused \
+    -o jack_gain           \
+    jack_gain.c            \
+    -ljack -lm
+
 
