@@ -39,6 +39,7 @@ SF_INFO sndfinfo;
 int sndmode = PLAY_MODE;
 int sndchans = 0;
 int waitchans = 0;
+int keep_waiting = 0;
 
 char jackname[JACK_CLIENT_NAME_SIZE] = {0};
 
@@ -104,6 +105,35 @@ void *fileio_function(void *ptr) {
     } // end while(1)
 }
 
+int waiting_check(void) {
+    int cidx, connectedchans = 0;
+    // if waitchans > 0, let's wait until waitchans channels have been connected
+    if(waitchans > 0) {
+        /* count number of connected channels */
+        for(cidx=0; cidx<sndchans; cidx++) {
+            if(sndmode == PLAY_MODE) {
+                connectedchans += jack_port_connected(jackout_ports[cidx]) ? 1 : 0;
+            }
+            else if(sndmode == REC_MODE) {
+                connectedchans += jack_port_connected(jackin_ports[cidx]) ? 1 : 0;
+            }
+            else {
+                /* FIXME catch error */
+            }
+        }
+        /* if connected channels is large enough, 
+        break out of this loop and start playing/recording */
+        if(connectedchans >= waitchans) {
+            return 0;
+        }
+        else {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
 /**
  * The process callback for this JACK application is called in a
  * special realtime thread once for each audio cycle.
@@ -118,6 +148,28 @@ jack_process (jack_nframes_t nframes, void *arg)
     int cidx, sidx;
     jack_nframes_t fidx, nframes_read_available, nframes_write_available;
     jack_nframes_t nframes_read, nframes_written;
+
+    if(keep_waiting) {
+        // don't touch ringbuffer, and nothing will happen re: the file
+        if(sndmode == PLAY_MODE) {
+            for(cidx=0; cidx<sndchans; cidx++) {
+                jack_default_audio_sample_t *jackbuf = jack_port_get_buffer(jackout_ports[cidx], nframes);
+                for(fidx=0; fidx<nframes; fidx++) {
+                    *(jackbuf++) = 0.0;
+                }
+            }
+        }
+        else if(sndmode == REC_MODE) {
+            for(cidx=0; cidx<sndchans; cidx++) {
+                // is it necessary to do anything here?
+                // jack_default_audio_sample_t *jackbuf = jack_port_get_buffer(jackin_ports[cidx], nframes);
+            }
+        }
+
+        keep_waiting = waiting_check();
+        return 0;
+    }
+
 
     // silence compiler
     arg = arg;
@@ -278,6 +330,9 @@ int main (int argc, char *argv[])
     /* force 0 <= waitchans <= sndchans */
     waitchans = waitchans <        0 ?        0 : waitchans;
     waitchans = waitchans > sndchans ? sndchans : waitchans;
+    if(waitchans >  0) {
+        keep_waiting = 1;
+    }
 
 	/* open a client connection to the JACK server */
 	client = jack_client_open(jackname, options, &status, server_name);
@@ -377,11 +432,6 @@ int main (int argc, char *argv[])
     if(err) {
         printf("encountered error code (%d) trying to call PaUtil_InitializeRingBuffer\n",err);
     }
-    
-
-    //return 0; // yoyoyo
-
-
 
     // if we're playing a file, let's pre-load the ring buffer with some data
     if(sndmode == PLAY_MODE){
@@ -397,35 +447,6 @@ int main (int argc, char *argv[])
             printf("WRN: in pre-loading pa_ringbuf, nframes_read = %d, nframes_read = %d\n",
                 nframes_read, nframes_read);
         }
-    }
-
-    // if waitchans > 0, let's wait until waitchans channels have been connected
-    if(waitchans > 0) {
-        int connectedchans;
-        while(1) {
-            /* count number of connected channels */
-            connectedchans = 0;
-            for(cidx=0; cidx<sndchans; cidx++) {
-                if(sndmode == PLAY_MODE) {
-                    connectedchans += jack_port_connected(jackout_ports[cidx]) ? 1 : 0;
-                }
-                else if(sndmode == REC_MODE) {
-                    connectedchans += jack_port_connected(jackin_ports[cidx]) ? 1 : 0;
-                }
-                else {
-                    /* FIXME catch error */
-                }
-            }
-            /* if connected channels is large enough, 
-            break out of this loop and start playing/recording */
-            if(connectedchans >= waitchans) {
-                break;
-            }
-
-            /* yield thread while in waiting state */
-            sched_yield();
-        }
-
     }
 
     // start the fileio_thread
