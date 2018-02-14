@@ -101,7 +101,7 @@ void *fileio_function(void *ptr) {
         else{
             /* FIXME, catch this error */
         }
-        sched_yield();
+        usleep(85000); // 85k ~ 16k (buf) / 192k (max rate) * 1e6 (usecs) // sched_yield();
     } // end while(1)
 }
 
