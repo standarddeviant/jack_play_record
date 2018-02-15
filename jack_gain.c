@@ -17,6 +17,11 @@
 // libraries/code that require building/linking
 #include <jack/jack.h>
 
+enum db_or_linear_mode{
+    JACK_GAIN_DB_MODE, 
+    JACK_GAIN_LINEAR_MODE };
+int db_or_linear = -1;
+
 #define JACK_GAIN_MAX_PORTS (64)
 #define JACK_GAIN_MAX_FRAMES (16384)
 jack_port_t *jackin_ports[JACK_GAIN_MAX_PORTS];
@@ -25,8 +30,8 @@ jack_client_t *client;
 
 #define JACK_CLIENT_NAME_SIZE (2048)
 #define JACK_PORT_NAME_SIZE (2048)
-jack_default_audio_sample_t db_gain = 0.0;
-jack_default_audio_sample_t linear_gain = 1.0;
+jack_default_audio_sample_t db_gains[JACK_GAIN_MAX_PORTS] = {0.0};
+jack_default_audio_sample_t linear_gains[JACK_GAIN_MAX_PORTS] = {1.0};
 int jackchans = 0;
 char jackname[JACK_CLIENT_NAME_SIZE] = {0};
 
@@ -53,7 +58,7 @@ jack_process (jack_nframes_t nframes, void *arg)
         jackbufIN = jack_port_get_buffer(jackin_ports[cidx], nframes);
         jackbufOUT = jack_port_get_buffer(jackout_ports[cidx], nframes);
         for(fidx=0; fidx<nframes; fidx++) {
-            *(jackbufOUT++) = *(jackbufIN++) * linear_gain;
+            *(jackbufOUT++) = *(jackbufIN++) * linear_gains[cidx];
         }
     } // end PLAY_MODE
 
@@ -74,6 +79,71 @@ jack_shutdown (void *arg)
     exit (1);
 }
 
+#define CHARBUF_1FLOAT_LEN (128)
+enum jack_gain_error_flag{
+    JACK_GAIN_NOERROR,
+    JACK_GAIN_UNKNOWN_ERROR,
+    JACK_GAIN_FILEREAD_ERROR,
+    JACK_GAIN_USAGE_ERROR, 
+    JACK_GAIN_ZEROCHANS_ERROR };
+
+int set_gains_from_file(char *fname, int mode, int *chans, 
+                        jack_default_audio_sample_t *dbs, 
+                        jack_default_audio_sample_t *lins) {
+    char charbuf_1float[CHARBUF_1FLOAT_LEN];
+    char *cb1ptr = &(charbuf_1float[0]);
+    int chanidx=0, c;
+    float afloat;
+    FILE *file;
+
+    file = fopen(fname, "r");
+    if (file) {
+        while(chanidx < JACK_GAIN_MAX_PORTS) {
+            c = getc(file);
+            if( EOF == c ) {
+                if( 0 == chanidx) {
+                    *(chans) = 0;
+                    return JACK_GAIN_ZEROCHANS_ERROR;
+                }
+                else {
+                    *(chans) = chanidx; // after parsing, index=count
+                    return JACK_GAIN_NOERROR;
+                }
+            }
+            // if it's a number or dot, put it in charbuf_1float
+            else if( (0x30 <= c && c <= 0x39) || c==0x2E || c==0x2D) {
+                *(cb1ptr++) = c;
+            }
+            else{
+                *(cb1ptr++) = 0; // null terminate
+                cb1ptr = &(charbuf_1float[0]);
+                if(0==strlen(cb1ptr)) {
+                    continue;
+                }
+
+                sscanf(charbuf_1float, "%f", &afloat);
+                printf("-->%s<-- : %.3f\n", cb1ptr, afloat);
+
+                if( mode == JACK_GAIN_DB_MODE ) {
+                    dbs[chanidx] = (jack_default_audio_sample_t)(afloat);
+                    lins[chanidx] = (jack_default_audio_sample_t)(pow(10.0f, afloat / 20.0f));
+                }
+                else if( mode == JACK_GAIN_LINEAR_MODE ){
+                    lins[chanidx] = (jack_default_audio_sample_t)(afloat);
+                    dbs[chanidx] = (jack_default_audio_sample_t)(20.0 * log10(afloat));
+                }
+                chanidx++; // increment channel index/count
+            }
+        }
+    }
+    else{
+        return JACK_GAIN_FILEREAD_ERROR; // send error code
+    }
+    
+    // if we get here, it's unclear how we get here...
+    return JACK_GAIN_UNKNOWN_ERROR;
+}
+
 void usage(void) {
     printf("\n\n");
     printf("Usage: jack_gain [OPTION...] -c chans\n");
@@ -81,13 +151,28 @@ void usage(void) {
     printf("  -c,    specify the number of channels\n");
     printf("  -d,    specify the dB gain\n");
     printf("  -l,    specify the linear gain\n");
+    printf("  -D,    specify the dB gain file of floats, delimited by not [0123456789.]\n");
+    printf("  -L,    specify the linear gain file of floats, delimited by not [0123456789.]\n");
     printf("  -n,    specify the name of the jack client\n");
     printf("\n\n");
 }
 
 void fyi(void) {
-    printf("\nINFO: Attempting to run jack_gain\n    where\n    \ndb_gain=%.2f, linear_gain=%.2f\n    channels=%d, and \n    client-name='%s'\n\n",
-            db_gain, linear_gain, jackchans, jackname);
+    int cidx;
+    printf("\nINFO: Attempting to run jack_gain\n    where\n    channels=%d\n    client-name='%s'",
+        jackchans, jackname);
+    
+    printf("\n    db_gains = ");
+    for(cidx=0; cidx<jackchans; cidx++){
+        printf("%3.3f, ", db_gains[cidx]);
+    }
+
+    printf("\n    linear_gains = ");
+    for(cidx=0; cidx<jackchans; cidx++){
+        printf("%3.3f, ", linear_gains[cidx]);
+    }
+
+    printf("\n\n");
 }
 
 int main (int argc, char *argv[])
@@ -95,24 +180,52 @@ int main (int argc, char *argv[])
     const char *server_name = NULL;
     jack_options_t options = JackNullOption;
     jack_status_t status;
+    jack_default_audio_sample_t db_gain, linear_gain;
 
-    int cidx, c;
+    int cidx, c, ret;
 
     char portname[JACK_PORT_NAME_SIZE] = {0};
 
-    while ((c = getopt (argc, argv, "c:d:l:n:h")) != -1)
-    switch (c)
-        {
-      	case 'c':
+    while ((c = getopt (argc, argv, "c:d:D:l:L:n:h")) != -1)
+    switch (c) {
+        case 'c':
             jackchans = atoi(optarg);
             break;
-      	case 'd':
-            db_gain = (jack_default_audio_sample_t)(atof(optarg));
+        case 'd':
+            db_gain = (jack_default_audio_sample_t)atof(optarg);
             linear_gain = (jack_default_audio_sample_t)(pow(10.0f, db_gain / 20.0f));
+            for(cidx=0; cidx<JACK_GAIN_MAX_PORTS; cidx++) {
+                db_gains[cidx] = db_gain;
+                linear_gains[cidx] = linear_gain;
+            }
             break;
-      	case 'l':
+        case 'l':
             linear_gain = (jack_default_audio_sample_t)(atof(optarg));
             db_gain = (jack_default_audio_sample_t)(20.0 * log10(linear_gain));
+            for(cidx=0; cidx<JACK_GAIN_MAX_PORTS; cidx++) {
+                linear_gains[cidx] = linear_gain;
+                db_gains[cidx] = db_gain;
+            }
+            break;
+        case 'D':
+            printf("yo, chans=%d\n", jackchans);
+            ret = set_gains_from_file(optarg, JACK_GAIN_DB_MODE, &(jackchans), 
+                                      &(db_gains[0]), &(linear_gains[0]));
+            printf("yo, chans=%d\n", jackchans);
+            if(ret){
+                printf("Error parsing %s\n", optarg);
+                usage();
+                return ret;
+            }
+            break;
+        case 'L':
+            ret = set_gains_from_file(optarg, JACK_GAIN_LINEAR_MODE, &(jackchans), 
+                                      &(db_gains[0]), &(linear_gains[0]));
+            if(ret){
+                printf("Error parsing %s\n", optarg);
+                usage();
+                return ret;
+            }
             break;
         case 'n':
             snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", optarg);
@@ -127,7 +240,7 @@ int main (int argc, char *argv[])
     /* after parsing args, if jackchans == 0, then just print usage */
     if(0 == jackchans) {
         usage();
-        return 0;
+        return JACK_GAIN_USAGE_ERROR;
     }
 
     /* ensure there's a reasonable jack client name if not already set */
@@ -135,27 +248,29 @@ int main (int argc, char *argv[])
         snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", "jack_gain");
     }
 
-    /* let user know what settings have been parsed */
+    /* open a client connection to the JACK server */
+    client = jack_client_open(jackname, options, &status, server_name);
+    if (client == NULL) {
+        fprintf (stderr, "jack_client_open() failed, "
+            "status = 0x%2.0x\n", status);
+        if (status & JackServerFailed) {
+            fprintf (stderr, "Unable to connect to JACK server\n");
+        }
+        exit (1);
+    }
+
+    if (status & JackServerStarted) {
+        fprintf (stderr, "JACK server started\n");
+    }
+
+    if (status & JackNameNotUnique) {
+        snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", jack_get_client_name(client));
+        fprintf(stderr, "unique name `%s' assigned\n", &(jackname[0]));
+    }
+
     fyi();
 
-	/* open a client connection to the JACK server */
-	client = jack_client_open(jackname, options, &status, server_name);
-	if (client == NULL) {
-		fprintf (stderr, "jack_client_open() failed, "
-			 "status = 0x%2.0x\n", status);
-		if (status & JackServerFailed) {
-			fprintf (stderr, "Unable to connect to JACK server\n");
-		}
-		exit (1);
-	}
-	if (status & JackServerStarted) {
-		fprintf (stderr, "JACK server started\n");
-	}
-	if (status & JackNameNotUnique) {
-		snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", jack_get_client_name(client));
-		fprintf(stderr, "unique name `%s' assigned\n", &(jackname[0]));
-	}
-
+    
     /* tell the JACK server to call `process()' whenever
         there is work to be done.
     */
