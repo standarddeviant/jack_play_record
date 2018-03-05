@@ -40,6 +40,8 @@ int sndmode = PLAY_MODE;
 int sndchans = 0;
 int waitchans = 0;
 int keep_waiting = 0;
+int repetitions = 0;
+int repetitions_finished = 0;
 
 char jackname[JACK_CLIENT_NAME_SIZE] = {0};
 
@@ -75,14 +77,19 @@ void *fileio_function(void *ptr) {
         if(sndmode == PLAY_MODE) {
             nframes_write_available = 
                 PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
-            if( nframes_write_available > 0 ) {
+            if( nframes_write_available > 0 && repetitions_finished < repetitions) {
                 // read data from sndf in to interleaved buffer
                 nframes_read = sf_readf_float(sndf, &(linbufFILE[0]), nframes_write_available);
                 if(nframes_read < nframes_write_available ) {
                     sf_seek(sndf, 0, SEEK_SET); // rewind to beginning of file
+                    repetitions_finished += 1;
                 }
                 nframes_written = PaUtil_WriteRingBuffer(pa_ringbuf, &(linbufFILE[0]), nframes_read);
             }
+            else {
+		memset((void *)(&(linbufFILE[0])), 0, sizeof(linbufFILE));
+                nframes_written = PaUtil_WriteRingBuffer(pa_ringbuf, &(linbufFILE[0]), nframes_write_available);
+	    }
         }
 
         else if(sndmode == REC_MODE) {
@@ -259,6 +266,7 @@ void usage(void) {
     printf("  -f,    specify the intended nframes for use with jack server\n");
     printf("         note, that this will save on memory, but is unsafe if the\n");
     printf("         jack server nframes value is ever increased\n");
+    printf("  -e,    specify number of repetitions, default=0 (infinite)\n");
     printf("  -w,    wait until W ports have been connected before playing or recording\n");
     printf("\n\n");
 }
@@ -282,7 +290,7 @@ int main (int argc, char *argv[])
 
     char portname[JACK_PORT_NAME_SIZE] = {0};
 
-    while ((c = getopt (argc, argv, "p:r:c:n:f:w:h")) != -1)
+    while ((c = getopt (argc, argv, "p:r:c:n:f:w:e:h")) != -1)
     switch (c)
         {
         case 'p':
@@ -304,6 +312,9 @@ int main (int argc, char *argv[])
             break;
         case 'w':
             waitchans = atoi(optarg);
+            break;
+        case 'e':
+            repetitions = atoi(optarg);
             break;
         case 'h':
             usage();
