@@ -1,7 +1,7 @@
-/** @file simple_client.c
+/** @file jack_play_record.c
  *
- * @brief This simple client demonstrates the most basic features of JACK
- * as they would be used by many applications.
+ * @brief This client will play or record a multichannel 
+ * audio file within JACK
  */
 
 // "standard" libraries
@@ -77,7 +77,7 @@ void *fileio_function(void *ptr) {
         if(sndmode == PLAY_MODE) {
             nframes_write_available = 
                 PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
-            if( nframes_write_available > 0 && repetitions_finished < repetitions) {
+            if( nframes_write_available > 0 && (repetitions==0 || repetitions_finished < repetitions) ) {
                 // read data from sndf in to interleaved buffer
                 nframes_read = sf_readf_float(sndf, &(linbufFILE[0]), nframes_write_available);
                 if(nframes_read < nframes_write_available ) {
@@ -145,12 +145,11 @@ int waiting_check(void) {
  * The process callback for this JACK application is called in a
  * special realtime thread once for each audio cycle.
  *
- * This client does nothing more than copy data from its input
- * port to its output port. It will exit when stopped by 
- * the user (e.g. using Ctrl-C on a unix-ish operating system)
+ * This client uses a PortAudio ringbuffer as buffer "in RAM"
+ * Reading from the disk directly in the jack process callback
+ * will likely yield dropouts, and we want to avoid that.
  */
-int
-jack_process (jack_nframes_t nframes, void *arg)
+int jack_process (jack_nframes_t nframes, void *arg)
 {
     int cidx, sidx;
     jack_nframes_t fidx, nframes_read_available, nframes_write_available;
@@ -249,8 +248,7 @@ jack_process (jack_nframes_t nframes, void *arg)
  * JACK calls this shutdown_callback if the server ever shuts down or
  * decides to disconnect the client.
  */
-void
-jack_shutdown (void *arg)
+void jack_shutdown (void *arg)
 {
     free(ringbuf_memory);
     arg=arg; /* silence compiler */
